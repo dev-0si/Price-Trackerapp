@@ -1,0 +1,9 @@
+name = "price-tracker-telegram"
+main = "src/index.js"
+compatibility_date = "2026-08-16"
+
+# D1 binding will be added in Stage 1 once the database is created
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "price-tracker-db"
+# database_id = "TBD"

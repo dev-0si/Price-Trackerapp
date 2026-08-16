@@ -1,0 +1,9 @@
+{
+  "name": "price-tracker-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Real-time crypto perp + FX price alert bot on Cloudflare Workers",
+  "workspaces": [
+    "workers/*"
+  ]
+}
