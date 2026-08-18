@@ -1,0 +1,17 @@
+name = "price-tracker-crypto"
+main = "src/index.js"
+compatibility_date = "2026-08-16"
+
+[[durable_objects.bindings]]
+name = "CRYPTO_DO"
+class_name = "CryptoTracker"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CryptoTracker"]
+
+# D1 binding — same database as the Telegram Worker
+[[d1_databases]]
+binding = "DB"
+database_name = "price-tracker-db"
+database_id = "3d482485-9ea5-4ed5-86c5-b91b89b2700a"

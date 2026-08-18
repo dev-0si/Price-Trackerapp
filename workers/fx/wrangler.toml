@@ -1,0 +1,16 @@
+name = "price-tracker-fx"
+main = "src/index.js"
+compatibility_date = "2026-08-17"
+
+[[durable_objects.bindings]]
+name = "FX_DO"
+class_name = "FxDurableObject"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "price-tracker-db"
+database_id = "3d482485-9ea5-4ed5-86c5-b91b89b2700a"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FxDurableObject"]

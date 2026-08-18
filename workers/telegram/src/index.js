@@ -30,6 +30,41 @@ async function answerCallbackQuery(token, callbackQueryId, text = "") {
   });
 }
 
+// Sub-step 5, piece 3 — tells the Crypto Worker's Durable Object to
+// instantly add/remove a live subscription, via the Service Binding set up
+// in piece 1 and the /notify route built in piece 2. FX symbols are
+// silently skipped since the FX Worker doesn't exist yet. If this call
+// fails for any reason, we don't let it break the Telegram flow — the D1
+// write already succeeded, and the DO will pick up the change on its next
+// natural reconnect regardless.
+async function notifyCrypto(env, action, symbol) {
+  try {
+    const resp = await env.CRYPTO_WORKER.fetch("https://internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, symbol }),
+    });
+    const text = await resp.text();
+    console.log(`notifyCrypto(${action}, ${symbol}):`, resp.status, text);
+  } catch (err) {
+    console.log(`notifyCrypto(${action}, ${symbol}) failed:`, err.message);
+  }
+}
+
+async function notifyFx(env, action, symbol) {
+  try {
+    const resp = await env.FX_WORKER.fetch("https://internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, symbol }),
+    });
+    const text = await resp.text();
+    console.log(`notifyFx(${action}, ${symbol}):`, resp.status, text);
+  } catch (err) {
+    console.log(`notifyFx(${action}, ${symbol}) failed:`, err.message);
+  }
+}
+
 async function getActiveSymbols(env) {
   const { results } = await env.DB.prepare(
     `SELECT a.symbol FROM alerts a LEFT JOIN alert_state s ON a.symbol = s.symbol
@@ -59,6 +94,14 @@ async function saveTrack(env, chatId, symbol, high, low, note) {
   await env.DB.prepare(
     `INSERT OR REPLACE INTO alert_state (symbol, fire_count, status) VALUES (?, 0, 'active')`
   ).bind(symbol).run();
+
+  if (assetType === "crypto") {
+    await notifyCrypto(env, "add", symbol);
+  }
+
+  if (assetType === "fx") {
+    await notifyFx(env, "add", symbol);
+  }
 
   await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId,
     `Tracking ${symbol} — High: ${high ?? "—"} Low: ${low ?? "—"}${note ? ` — Note: ${note}` : ""}`);
@@ -168,6 +211,14 @@ async function handleRemove(env, chatId, argsText) {
   }
   await env.DB.prepare(`DELETE FROM alerts WHERE symbol = ?`).bind(symbol).run();
   await env.DB.prepare(`DELETE FROM alert_state WHERE symbol = ?`).bind(symbol).run();
+  if (detectAssetType(symbol) === "crypto") {
+    await notifyCrypto(env, "remove", symbol);
+  }
+
+  if (detectAssetType(symbol) === "fx") {
+    await notifyFx(env, "remove", symbol);
+  }
+
   await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Removed ${symbol}`);
 }
 
@@ -231,7 +282,16 @@ async function routeCommand(env, chatId, text) {
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+
     if (request.method !== "POST") {
+      // Test route — confirms the Service Binding to the Crypto Worker
+      // works, before any real instant-notify logic is added.
+      if (url.searchParams.get("testbinding") === "1") {
+        const resp = await env.CRYPTO_WORKER.fetch("https://internal/ping");
+        const text = await resp.text();
+        return new Response(`Crypto Worker responded: ${text}`, { status: 200 });
+      }
       return new Response("Price Tracker — Telegram Worker: alive", { status: 200 });
     }
 
@@ -248,11 +308,27 @@ export default {
         if (action === "remove") {
           await env.DB.prepare(`DELETE FROM alerts WHERE symbol = ?`).bind(symbol).run();
           await env.DB.prepare(`DELETE FROM alert_state WHERE symbol = ?`).bind(symbol).run();
+          if (detectAssetType(symbol) === "crypto") {
+            await notifyCrypto(env, "remove", symbol);
+          }
+
+          if (detectAssetType(symbol) === "fx") {
+            await notifyFx(env, "remove", symbol);
+          }
+
           await answerCallbackQuery(env.TELEGRAM_BOT_TOKEN, cq.id, `Removed ${symbol}`);
           await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Removed ${symbol}`);
         } else if (action === "cleartrig") {
           await env.DB.prepare(`DELETE FROM alerts WHERE symbol = ?`).bind(symbol).run();
           await env.DB.prepare(`DELETE FROM alert_state WHERE symbol = ?`).bind(symbol).run();
+          if (detectAssetType(symbol) === "crypto") {
+            await notifyCrypto(env, "remove", symbol);
+          }
+
+          if (detectAssetType(symbol) === "fx") {
+            await notifyFx(env, "remove", symbol);
+          }
+
           await answerCallbackQuery(env.TELEGRAM_BOT_TOKEN, cq.id, `Cleared ${symbol}`);
           await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Cleared ${symbol} — deleted entirely`);
         } else if (action === "edit") {

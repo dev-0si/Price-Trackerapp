@@ -6,7 +6,7 @@ Technical implementation detail for everything defined in REQUIREMENTS.md.
 
 Three concerns, three Workers:
 
-1. **Crypto Worker** — owns the Crypto Durable Object (MEXC/Binance WebSocket feeds)
+1. **Crypto Worker** — owns the Crypto Durable Object (MEXC/OKX WebSocket feeds)
 2. **FX Worker** — owns the FX Durable Object (Tiingo WebSocket feed, REST fallback)
 3. **Telegram Worker** — owns the Telegram webhook, command handling, and D1 access
 
@@ -14,7 +14,7 @@ All three share the same D1 database for alert configs and state.
 
 ## Durable Objects
 
-- **Crypto DO** — holds WebSocket connection(s) to MEXC (primary) and Binance
+- **Crypto DO** — holds WebSocket connection(s) to MEXC (primary) and OKX
   (fallback). Multiplexes all ~20 symbols over as few connections as the
   exchange API allows, rather than one socket per symbol.
 - **FX DO** — holds WebSocket connection to Tiingo's firehose (primary),
@@ -27,12 +27,31 @@ All three share the same D1 database for alert configs and state.
 
 ## Feed fallback logic
 
-- **Crypto:** MEXC → Binance, automatic, no manual trigger
+- **Crypto:** MEXC → OKX, automatic, no manual trigger
 - **FX:** Tiingo (WebSocket) → Twelve Data (REST) → Finnhub (REST), automatic
 - On any fallback trigger, send a Telegram notification that the primary feed
   is down and which backup is now active
 - On primary feed recovery, switch back automatically (behavior to confirm
   when we build this — could auto-switch back or require manual confirm)
+
+### Why not Binance or Bybit
+
+Binance was the original planned crypto fallback (Bybit was considered as an
+alternative). Both were ruled out during Stage 3 testing:
+
+- Both actively block WebSocket connections originating from Cloudflare
+  Workers' shared server network — confirmed via live `403 Forbidden`
+  responses when the Crypto DO attempted to connect, even after adding
+  browser-like headers (`User-Agent`, `Origin`) to the request.
+- This is a known, longstanding, documented behavior on their end (multiple
+  independent developer reports going back years), not something fixable
+  from our code.
+
+OKX was tested next (same fallback pattern, perpetual swap symbols in
+`BTC-USDT-SWAP` format) and connects successfully — confirmed with live
+ticks received in Stage 3 testing. If OKX ever becomes unreliable, Bitget or
+BingX are untested but plausible next candidates — no reports found either
+confirming or ruling them out.
 
 ## D1 schema — draft, TBD
 
@@ -68,7 +87,7 @@ To be finalized in a dedicated schema session. Expected tables:
   multiple named environments — decide when scaffolding starts
 - **Staging environment** required: separate D1 database + separate Telegram
   bot (or test chat) before anything touches production
-- Secrets (MEXC/Binance keys if needed, Tiingo key, Twelve Data key, Finnhub
+- Secrets (MEXC/OKX keys if needed, Tiingo key, Twelve Data key, Finnhub
   key, Telegram bot token) set via `wrangler secret put`, one set per environment
 - CI: GitHub Actions triggers `wrangler deploy` on push to main (staging) and
   on a tagged release or manual approval (production) — exact trigger rule TBD

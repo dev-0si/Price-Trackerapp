@@ -7,3 +7,14 @@ compatibility_date = "2026-08-16"
 binding = "DB"
 database_name = "price-tracker-db"
 database_id = "3d482485-9ea5-4ed5-86c5-b91b89b2700a"
+
+# Service Binding to the Crypto Worker — lets this Worker call it directly
+# (Sub-step 5: instant-notify link for /track, /remove, /edit)
+[[services]]
+binding = "CRYPTO_WORKER"
+service = "price-tracker-crypto"
+
+# Add FX service binder
+[[services]]
+binding = "FX_WORKER"
+service = "price-tracker-fx"

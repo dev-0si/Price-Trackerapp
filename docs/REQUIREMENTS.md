@@ -39,7 +39,10 @@ Telegram, replacing the current polling-based (GitHub Actions) system.
 
 ## Reliability
 
-- **Crypto feed:** MEXC primary, auto-fallback to Binance on failure
+- **Crypto feed:** MEXC primary, auto-fallback to OKX on failure. (Binance
+  and Bybit were the original candidates for fallback but were ruled out
+  during Stage 3 testing — both block connections from Cloudflare Workers'
+  network at the infrastructure level. See SPECS.md for detail.)
 - **FX feed:** Tiingo primary, auto-fallback to Twelve Data/Finnhub (REST) on failure
 - Telegram notification sent when a feed goes down (not silent)
 - Fallback is automatic, no manual intervention required
@@ -58,7 +61,7 @@ Telegram, replacing the current polling-based (GitHub Actions) system.
 
 ## Constraints
 
-- Strictly free-tier only: Cloudflare, MEXC, Binance, Tiingo, Twelve Data, Finnhub
+- Strictly free-tier only: Cloudflare, MEXC, OKX, Tiingo, Twelve Data, Finnhub
 - No paid upgrades, even if a limit gets tight, unless explicitly revisited
 
 ## Explicitly out of scope (for now)
