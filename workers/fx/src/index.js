@@ -15,6 +15,7 @@ function toFinnhubSymbol(symbol) {
 
 const REST_POLL_INTERVAL_MS = 30000; // well under Twelve Data's 8-calls/min cap
 const TIINGO_RETRY_INTERVAL_MS = 90000; // how often we try to recover Tiingo while on fallback
+const ALARM_INTERVAL_MS = 5000; // watchdog check interval, matches Crypto Worker
 
 export class FxDurableObject {
   constructor(state, env) {
@@ -27,10 +28,13 @@ export class FxDurableObject {
     this.activeSource = null; // "tiingo" | "twelvedata" | "finnhub" | null
     this.restPollInterval = null;
     this.tiingoRetryInterval = null;
+    this.feedDown = false;
 
     this.state.blockConcurrencyWhile(async () => {
       await this.loadTrackedPairs();
+      await this.loadAlertTargets();
       await this.connectTiingo();
+      await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS); // <-- add this line
     });
   }
 
@@ -46,6 +50,38 @@ export class FxDurableObject {
     console.log("FX DO loaded tracked pairs:", this.trackedPairs);
   }
 
+  async loadAlertTargets() {
+    const { results } = await this.env.DB.prepare(
+      `SELECT a.symbol, a.high_target, a.low_target, a.note, s.fire_count, s.status
+     FROM alerts a LEFT JOIN alert_state s ON a.symbol = s.symbol
+     WHERE a.asset_type = 'fx'`
+    ).all();
+
+    this.alertTargets = {};
+    for (const row of results) {
+      this.alertTargets[row.symbol] = {
+        high: row.high_target,
+        low: row.low_target,
+        note: row.note,
+        fireCount: row.fire_count ?? 0,
+        status: row.status ?? "active"
+      };
+    }
+    console.log("FX DO loaded alert targets:", this.alertTargets);
+  }
+
+  async alarm() {
+    console.log("[alarm] Watchdog check — tiingo ws state:", this.tiingoSocket ? this.tiingoSocket.readyState : "null");
+    if (!this.tiingoSocket || this.tiingoSocket.readyState !== 1) {
+      console.log("[alarm] Connection dead or missing — reconnecting now");
+      this.tiingoSocket = null;
+      this.activeSource = null;
+      await this.connectTiingo();
+    }
+    // Reschedule the next check.
+    await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+  }
+
   async connectTiingo() {
     try {
       const resp = await fetch("https://api.tiingo.com/fx", {
@@ -54,6 +90,10 @@ export class FxDurableObject {
 
       const ws = resp.webSocket;
       if (!ws) {
+        this.feedStatus = "tiingo connect failed: no upgrade";
+        console.log(this.feedStatus, "— starting REST fallback");
+        this.startRestFallback();
+        return;
       }
 
       ws.accept();
@@ -65,6 +105,11 @@ export class FxDurableObject {
       // live socket is doing the job again.
       this.stopRestFallback();
       this.stopTiingoRetry();
+
+      if (this.feedDown) {
+        this.feedDown = false;
+        await this.notifyFeedStatus("fx", "recovered");
+      }
 
       ws.addEventListener("message", (event) => {
         this.handleTiingoMessage(event.data);
@@ -106,11 +151,12 @@ export class FxDurableObject {
     }
   }
 
-  updateSubscription(action, symbol) {
+  async updateSubscription(action, symbol) {
     const lower = symbol.toLowerCase();
 
     if (action === "add" && !this.trackedPairs.includes(symbol)) {
       this.trackedPairs.push(symbol);
+      await this.loadAlertTargets(); // refresh so the new symbol's targets are live immediately
     } else if (action === "remove") {
       this.trackedPairs = this.trackedPairs.filter((p) => p !== symbol);
       delete this.latestTicks[symbol.toLowerCase()];
@@ -123,11 +169,11 @@ export class FxDurableObject {
         eventData: { thresholdLevel: 5, tickers: [lower] }
       };
       this.tiingoSocket.send(JSON.stringify(msg));
-      console.log(`[notify][Tiingo] ${action}: ${lower}`);
+      console.log(`[notify][Tiingo] ${action}: ${lower} `);
       return { ok: true, note: `${action} sent to Tiingo live socket` };
     }
 
-    console.log(`[notify] Not on live Tiingo socket (source: ${this.activeSource}) — ${action} for ${symbol} queued via trackedPairs, will apply on next Tiingo (re)connect or REST poll`);
+    console.log(`[notify] Not on live Tiingo socket(source: ${this.activeSource}) — ${action} for ${symbol} queued via trackedPairs, will apply on next Tiingo(re)connect or REST poll`);
     return { ok: true, note: "Queued via trackedPairs; will apply on next reconnect or REST poll" };
   }
 
@@ -167,9 +213,19 @@ export class FxDurableObject {
     }
   }
 
+  async notifyFeedStatus(source, status) {   // <- step 2, new method goes here
+    this.state.waitUntil(
+      this.env.TELEGRAM_WORKER.fetch("https://internal/feed-status", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source, status })
+      }).catch((err) => console.log("feed-status push failed:", err.message))
+    );
+  }
+
   async pollRestFallback() {
     if (this.trackedPairs.length === 0) {
-      this.feedStatus = `${this.activeSource} fallback (no pairs tracked)`;
+      this.feedStatus = `${this.activeSource} fallback(no pairs tracked)`;
       return;
     }
     const twelveDataOk = await this.pollTwelveData();
@@ -181,6 +237,10 @@ export class FxDurableObject {
     console.log("Twelve Data poll failed — all feeds down, will retry next interval");
     this.feedStatus = "all feeds down";
     this.activeSource = null;
+    if (!this.feedDown) {
+      this.feedDown = true;
+      await this.notifyFeedStatus("fx", "down");
+    }
   }
 
   // Twelve Data's /quote endpoint accepts a comma-separated symbol list and
@@ -269,10 +329,44 @@ export class FxDurableObject {
       if (isTracked) {
         this.latestTicks[ticker] = { bid: bidPrice, ask: askPrice, receivedAt: Date.now() };
         this.feedStatus = "tiingo live";
+        this.checkAlert(ticker.toUpperCase(), (bidPrice + askPrice) / 2);
       } else {
         console.log(`[tiingo] Ignoring untracked tick for ${ticker} (possibly stale unsubscribe)`);
       }
     }
+  }
+
+  async checkAlert(symbolUpper, price) {
+    const t = this.alertTargets?.[symbolUpper];
+    if (!t || t.status === "triggered") return;
+
+    const highBreached = t.high !== null && price >= t.high;
+    const lowBreached = t.low !== null && price <= t.low;
+    if (!highBreached && !lowBreached) return;
+
+    const triggeredSide = highBreached ? "High" : "Low";
+    const triggeredTarget = highBreached ? t.high : t.low;
+
+    t.fireCount += 1;
+    const newStatus = t.fireCount >= 5 ? "triggered" : "active";
+    t.status = newStatus;
+
+    await this.env.DB.prepare(
+      `INSERT INTO alert_state (symbol, fire_count, status, last_fired_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(symbol) DO UPDATE SET fire_count = ?, status = ?, last_fired_at = ?`
+    ).bind(symbolUpper, t.fireCount, newStatus, new Date().toISOString(),
+      t.fireCount, newStatus, new Date().toISOString()).run();
+
+    this.state.waitUntil(
+      this.env.TELEGRAM_WORKER.fetch("https://internal/alert-fire", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ symbol: symbolUpper, price, fireCount: t.fireCount, triggeredSide, triggeredTarget, note: t.note })
+      }).catch((err) => console.log("alert-fire push failed:", err.message))
+    );
+
+    console.log(`[ALERT FIRED] ${symbolUpper} @ ${price} (fire ${t.fireCount}/5)`);
   }
 
   async fetch(request) {
@@ -302,10 +396,10 @@ export class FxDurableObject {
       if (!symbol || (action !== "add" && action !== "remove")) {
         return new Response("Expected { action: 'add'|'remove', symbol: 'SYMBOL' }", { status: 400 });
       }
-      const result = this.updateSubscription(action, symbol);
+      const result = await this.updateSubscription(action, symbol);
       return new Response(JSON.stringify(result), {
         status: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json" }
       });
     }
 

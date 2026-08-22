@@ -280,6 +280,21 @@ async function routeCommand(env, chatId, text) {
   }
 }
 
+function formatPrice(symbol, price) {
+  if (price === undefined || price === null || isNaN(price)) return "N/A";
+  const num = Number(price);
+
+  // FX: JPY pairs get 3 decimals, other FX pairs get 5
+  if (/^[A-Z]{6}$/.test(symbol)) {
+    return symbol.includes("JPY") ? num.toFixed(3) : num.toFixed(5);
+  }
+
+  // Crypto: scale decimals to price magnitude
+  if (num >= 100) return num.toFixed(2);
+  if (num >= 1) return num.toFixed(4);
+  return num.toFixed(6);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -293,6 +308,58 @@ export default {
         return new Response(`Crypto Worker responded: ${text}`, { status: 200 });
       }
       return new Response("Price Tracker — Telegram Worker: alive", { status: 200 });
+    }
+
+    if (url.pathname === "/alert-fire") {
+      let body;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return new Response("Invalid JSON body", { status: 400 });
+      }
+      const { symbol, price, fireCount, triggeredSide, triggeredTarget, note } = body || {};
+      if (!symbol || price === undefined) {
+        return new Response("Expected { symbol, price, fireCount }", { status: 400 });
+      }
+
+      console.log(`[alert-fire] ${symbol} @ ${price} (fire ${fireCount}/5)`);
+
+      const formattedPrice = formatPrice(symbol, price);
+      const formattedTarget = formatPrice(symbol, triggeredTarget);
+
+      await sendMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        env.TELEGRAM_CHAT_ID,
+        `🔔 <b>${symbol}</b> alert triggered\n${triggeredSide}: ${formattedTarget}\nCurrent Price: ${formattedPrice}\nFire count: ${fireCount}/5${note ? `\nNote: ${note}` : ""}`
+      );
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (url.pathname === "/feed-status") {
+      let body;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return new Response("Invalid JSON body", { status: 400 });
+      }
+      const { source, status } = body || {};
+      const emoji = status === "down" ? "🔴" : "🟢";
+      const label = status === "down" ? "feed is DOWN (both providers failed)" : "feed has RECOVERED";
+
+      await sendMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        env.TELEGRAM_CHAT_ID,
+        `${emoji} <b>${source.toUpperCase()}</b> ${label}`
+      );
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
     }
 
     try {

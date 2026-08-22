@@ -14,3 +14,7 @@ database_id = "3d482485-9ea5-4ed5-86c5-b91b89b2700a"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["FxDurableObject"]
+
+[[services]]
+binding = "TELEGRAM_WORKER"
+service = "price-tracker-telegram"

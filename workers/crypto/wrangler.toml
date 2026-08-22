@@ -15,3 +15,7 @@ new_sqlite_classes = ["CryptoTracker"]
 binding = "DB"
 database_name = "price-tracker-db"
 database_id = "3d482485-9ea5-4ed5-86c5-b91b89b2700a"
+
+[[services]]
+binding = "TELEGRAM_WORKER"
+service = "price-tracker-telegram"
